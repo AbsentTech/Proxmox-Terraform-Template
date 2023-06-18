@@ -1,0 +1,65 @@
+name: Terraform Deployment
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - closed
+  #delete branch named active-config
+  delete:
+    branches:
+      - active-config
+
+
+env:
+  AWS_REGION: us-east-2
+  TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+  TF_VAR_proxmox_api_token_secret: ${{ secrets.PROXMOX_API_TOKEN_SECRET }}
+  TF_VAR_proxmox_api_token_id: ${{ secrets.PROXMOX_API_TOKEN_ID }}
+  TF_VAR_cipassword: ${{ secrets.CIPASSWORD }}
+  DYNAMODB_TABLE: terraform-remote-state-dynamo
+  VM_NAME: ''
+jobs:
+  run-terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v2
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v1
+        with:
+            authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+            version: 1.20.0
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Initialize Terraform
+        run: |
+          echo 'terraform {' > backend.tf
+          echo '  required_version = ">= 1.0.0"' >> backend.tf
+          echo '' >> backend.tf
+          echo '  backend "s3" {' >> backend.tf
+          echo '    bucket = "absent-terraform-remote-state-bucket"' >> backend.tf
+          echo '    key    = "${{ github.event.repository.name }}/state.tfstate"' >> backend.tf
+          echo '    region = "${{ env.AWS_REGION }}"' >> backend.tf
+          echo '    dynamodb_table = "${{ env.DYNAMODB_TABLE }}"' >> backend.tf
+          echo '    encrypt = true' >> backend.tf
+          echo '  }' >> backend.tf
+          echo '}' >> backend.tf
+          terraform init
+      - name: Terraform Validate
+        run: terraform validate
+      - name: Terraform Plan
+        if:  github.event_name != 'delete'
+        run: terraform plan -var="proxmox_api_url=${{ vars.PROXMOX_API_URL }}" -var="proxmox_api_token_id=${{ secrets.PROXMOX_API_TOKEN_ID }}" -var="proxmox_api_token_secret=${{ secrets.PROXMOX_API_TOKEN_SECRET }}"
+      - name: Apply Terraform Changes
+        if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'active-config'
+        run: terraform apply -auto-approve -var="proxmox_api_url=${{ vars.PROXMOX_API_URL }}" -var="proxmox_api_token_id=${{ secrets.PROXMOX_API_TOKEN_ID }}" -var="proxmox_api_token_secret=${{ secrets.PROXMOX_API_TOKEN_SECRET }}"
+      - name: Destroy Terraform Resources
+        if:  github.event_name == 'delete'
+        run: terraform destroy -auto-approve -var="proxmox_api_url=${{ vars.PROXMOX_API_URL }}" -var="proxmox_api_token_id=${{ secrets.PROXMOX_API_TOKEN_ID }}" -var="proxmox_api_token_secret=${{ secrets.PROXMOX_API_TOKEN_SECRET }}"
